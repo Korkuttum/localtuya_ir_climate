@@ -109,7 +109,7 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_manual(self, user_input=None):
         """Handle manual configuration."""
-        return await self.async_step_climate_config()
+        return await self.async_step_manual_config()
 
     async def async_step_device_select(self, user_input=None):
         """Select device from cloud."""
@@ -121,7 +121,9 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             for device in self.cloud_devices:
                 if device['id'] == device_id:
-                    self.config[CONF_NAME] = device['name']
+                    # Cloud cihaz ismini kullan ama kullanıcı tanımlı ismi koru
+                    if not self.config[CONF_NAME] or self.config[CONF_NAME] == DEFAULT_FRIENDLY_NAME:
+                        self.config[CONF_NAME] = device['name']
                     self.config[CONF_LOCAL_KEY] = device['key']
                     self.cloud_info = device
                     break
@@ -217,7 +219,10 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         return self.async_abort(reason="already_configured")
                     
                     await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
-                    return self.async_create_entry(title=self.config[CONF_NAME], data=self.config)
+                    return self.async_create_entry(
+                        title=self.config[CONF_NAME], 
+                        data=self.config
+                    )
                 else:
                     # IP bulundu ama bağlantı kurulamadı
                     return await self.async_step_cloud_ip()
@@ -266,7 +271,10 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="already_configured")
                 
                 await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
-                return self.async_create_entry(title=self.config[CONF_NAME], data=self.config)
+                return self.async_create_entry(
+                    title=self.config[CONF_NAME], 
+                    data=self.config
+                )
             else:
                 errors["base"] = "cannot_connect"
 
@@ -285,6 +293,7 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Manual device configuration."""
         errors = {}
         if user_input is not None:
+            # Kullanıcı girdisini config'e kaydet
             self.config.update(user_input)
             
             # Auto version ile connection test
@@ -311,7 +320,10 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="already_configured")
                 
                 await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
-                return self.async_create_entry(title=self.config[CONF_NAME], data=self.config)
+                return self.async_create_entry(
+                    title=self.config[CONF_NAME], 
+                    data=self.config
+                )
             else:
                 errors["base"] = "cannot_connect"
 
