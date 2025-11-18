@@ -67,6 +67,7 @@ class LGProtocol(ClimateIRProtocol):
         # State tracking
         self.mode_before = HVACMode.OFF
         self.swing_active = False  # Swing durumunu takip et
+        self.last_hvac_mode = HVACMode.OFF  # Son HVAC modu
         
         _LOGGER.debug("LG Protocol initialized")
 
@@ -89,22 +90,27 @@ class LGProtocol(ClimateIRProtocol):
             self.swing_active = False
             _LOGGER.debug("Turning swing OFF")
         
-        # Swing komutu gönder (açık veya kapalı farketmez, toggle olarak çalışır)
-        if swing_changed and hvac_mode != HVACMode.OFF:
+        # HVAC modu değişti mi kontrol et
+        hvac_changed = (hvac_mode != self.last_hvac_mode)
+        self.last_hvac_mode = hvac_mode
+        
+        # EĞER SADECE SWING DEĞİŞTİYSE ve HVAC AYNIYSA, sadece swing komutu gönder
+        if swing_changed and not hvac_changed and hvac_mode != HVACMode.OFF:
             remote_state |= self.COMMAND_SWING
-            _LOGGER.debug("Sending swing toggle command")
+            _LOGGER.debug("Sending ONLY swing toggle command")
             
             # Calculate checksum
             remote_state = self._calculate_checksum(remote_state)
-            _LOGGER.debug(f"Swing remote state: 0x{remote_state:08X}")
+            _LOGGER.debug(f"Swing-only remote state: 0x{remote_state:08X}")
             
             # Convert to pulse sequence
             pulses = self._encode_to_pulses(remote_state)
-            _LOGGER.debug(f"Generated {len(pulses)} pulses for swing")
+            _LOGGER.debug(f"Generated {len(pulses)} pulses for swing-only")
             
             return pulses
         
-        # Normal mod komutları (swing değişmediyse veya klima kapalıysa)
+        # EĞER HVAC MODU DEĞİŞTİYSE veya hem HVAC hem swing değiştiyse NORMAL KOMUT GÖNDER
+        # Normal mod komutları - HVAC DEĞİŞTİYSE SWING DURUMUNA BAKMAKSIZIN KOMUT GÖNDER
         climate_is_off = (self.mode_before == HVACMode.OFF)
         
         if hvac_mode == HVACMode.OFF:
