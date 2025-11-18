@@ -343,6 +343,7 @@ class TuyaIRClimate(ClimateEntity):
         else:
             hvac_mode_str = str(hvac_mode)
             
+        _LOGGER.debug("Setting HVAC mode from %s to %s", self._hvac_mode, hvac_mode_str)
         self._hvac_mode = hvac_mode_str
         
         # HVAC action'ı ayarla
@@ -358,7 +359,6 @@ class TuyaIRClimate(ClimateEntity):
         else:
             self._hvac_action = "idle"
             
-        _LOGGER.debug("Setting HVAC mode to %s (string: %s)", hvac_mode, hvac_mode_str)
         await self._send_climate_command()
         self.async_write_ha_state()
 
@@ -382,7 +382,14 @@ class TuyaIRClimate(ClimateEntity):
             
         _LOGGER.debug("Setting swing mode to %s", swing_mode_str)
         self._swing_mode = swing_mode_str
+        
+        # Swing komutunu gönder
         await self._send_climate_command()
+        
+        # Swing durumunu entity state'ine yansıt
+        if hasattr(self._protocol, 'swing_active'):
+            self._swing_mode = SwingMode.VERTICAL if self._protocol.swing_active else SwingMode.OFF
+        
         self.async_write_ha_state()
 
     async def _send_climate_command(self):
