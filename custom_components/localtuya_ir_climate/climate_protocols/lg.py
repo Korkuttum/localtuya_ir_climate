@@ -66,6 +66,7 @@ class LGProtocol(ClimateIRProtocol):
         
         # State tracking
         self.mode_before = HVACMode.OFF
+        self.swing_active = False  # Swing durumunu takip et
         
         _LOGGER.debug("LG Protocol initialized")
 
@@ -75,27 +76,52 @@ class LGProtocol(ClimateIRProtocol):
         
         remote_state = 0x8800000  # Base LG code
         
-        # Handle swing command
-        if swing_mode == SwingMode.VERTICAL and self.mode_before != HVACMode.OFF:
-            remote_state |= self.COMMAND_SWING
-            _LOGGER.debug("Adding swing command")
-        else:
-            # Handle normal mode commands
-            climate_is_off = (self.mode_before == HVACMode.OFF)
-            
-            if hvac_mode == HVACMode.OFF:
-                remote_state |= self.COMMAND_OFF
-            elif hvac_mode == HVACMode.COOL:
-                remote_state |= self.COMMAND_ON_COOL if climate_is_off else 0x08000
-            elif hvac_mode == HVACMode.DRY:
-                remote_state |= self.COMMAND_ON_DRY if climate_is_off else 0x09000
-            elif hvac_mode == HVACMode.FAN_ONLY:
-                remote_state |= self.COMMAND_ON_FAN_ONLY if climate_is_off else 0x0A000
-            elif hvac_mode == HVACMode.HEAT_COOL:
-                remote_state |= self.COMMAND_ON_AI if climate_is_off else 0x0B000
-            elif hvac_mode == HVACMode.HEAT:
-                remote_state |= self.COMMAND_ON_HEAT if climate_is_off else 0x0C000
+        # Swing modu değişti mi kontrol et
+        swing_changed = False
+        if swing_mode == SwingMode.VERTICAL and not self.swing_active:
+            # Swing açılıyor
+            swing_changed = True
+            self.swing_active = True
+            _LOGGER.debug("Turning swing ON")
+        elif swing_mode == SwingMode.OFF and self.swing_active:
+            # Swing kapanıyor
+            swing_changed = True
+            self.swing_active = False
+            _LOGGER.debug("Turning swing OFF")
         
+        # Swing komutu gönder (açık veya kapalı farketmez, toggle olarak çalışır)
+        if swing_changed and hvac_mode != HVACMode.OFF:
+            remote_state |= self.COMMAND_SWING
+            _LOGGER.debug("Sending swing toggle command")
+            
+            # Calculate checksum
+            remote_state = self._calculate_checksum(remote_state)
+            _LOGGER.debug(f"Swing remote state: 0x{remote_state:08X}")
+            
+            # Convert to pulse sequence
+            pulses = self._encode_to_pulses(remote_state)
+            _LOGGER.debug(f"Generated {len(pulses)} pulses for swing")
+            
+            return pulses
+        
+        # Normal mod komutları (swing değişmediyse veya klima kapalıysa)
+        climate_is_off = (self.mode_before == HVACMode.OFF)
+        
+        if hvac_mode == HVACMode.OFF:
+            remote_state |= self.COMMAND_OFF
+            # Klima kapanınca swing'i de sıfırla
+            self.swing_active = False
+        elif hvac_mode == HVACMode.COOL:
+            remote_state |= self.COMMAND_ON_COOL if climate_is_off else 0x08000
+        elif hvac_mode == HVACMode.DRY:
+            remote_state |= self.COMMAND_ON_DRY if climate_is_off else 0x09000
+        elif hvac_mode == HVACMode.FAN_ONLY:
+            remote_state |= self.COMMAND_ON_FAN_ONLY if climate_is_off else 0x0A000
+        elif hvac_mode == HVACMode.HEAT_COOL:
+            remote_state |= self.COMMAND_ON_AI if climate_is_off else 0x0B000
+        elif hvac_mode == HVACMode.HEAT:
+            remote_state |= self.COMMAND_ON_HEAT if climate_is_off else 0x0C000
+    
         self.mode_before = hvac_mode
         
         # Set fan speed
@@ -111,8 +137,8 @@ class LGProtocol(ClimateIRProtocol):
             else:  # AUTO or unknown
                 remote_state |= self.FAN_AUTO
         
-        # Set temperature for appropriate modes
-        if hvac_mode in [HVACMode.COOL, HVACMode.HEAT]:
+        # Set temperature for appropriate modes - SWING AÇIKKEN DE AYARLANABİLSİN
+        if hvac_mode in [HVACMode.COOL, HVACMode.HEAT, HVACMode.HEAT_COOL, HVACMode.AUTO, HVACMode.DRY]:
             temp_val = int(max(self.TEMP_MIN, min(self.TEMP_MAX, target_temp)))
             remote_state |= ((temp_val - 15) << 8)
             _LOGGER.debug(f"Setting temperature: {temp_val}°C, code: {((temp_val - 15) << 8):04X}")
