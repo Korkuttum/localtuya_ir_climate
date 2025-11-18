@@ -1,0 +1,12 @@
+{
+  "domain": "localtuya_ir_climate",
+  "name": "LocalTuya IR Climate",
+  "codeowners": ["@korkuttum"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/korkuttum/localtuya_ir_climate",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/korkuttum/localtuya_ir_climate/issues",
+  "requirements": ["tinytuya>=1.17.2"],
+  "version": "1.0.0"
+}
