@@ -29,6 +29,7 @@ except ImportError:
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, DEFAULT_FRIENDLY_NAME, CONF_CLIMATE_BRAND
 
@@ -43,6 +44,17 @@ HVAC_MODE_MAPPING = {
     "auto": HVACMode.AUTO,
     "dry": HVACMode.DRY,
     "fan_only": HVACMode.FAN_ONLY,
+}
+
+# Reverse mapping for restore
+HVAC_MODE_REVERSE_MAPPING = {
+    HVACMode.OFF: "off",
+    HVACMode.HEAT: "heat", 
+    HVACMode.COOL: "cool",
+    HVACMode.HEAT_COOL: "heat_cool",
+    HVACMode.AUTO: "auto",
+    HVACMode.DRY: "dry",
+    HVACMode.FAN_ONLY: "fan_only",
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -74,7 +86,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     async_add_entities([climate])
 
 
-class TuyaIRClimate(ClimateEntity):
+class TuyaIRClimate(ClimateEntity, RestoreEntity):
     def __init__(self, name, dev_id, address, local_key, protocol_version, climate_brand):
         """Initialize the climate device."""
         self._attr_name = name  # Entity ismi için doğrudan attribute
@@ -93,7 +105,7 @@ class TuyaIRClimate(ClimateEntity):
         self._available = False
         self._lock = threading.Lock()
         
-        # String değerlerle başlat, sonra enum'a çevir
+        # Varsayılan değerler - restore edilemezse bunlar kullanılacak
         self._hvac_mode = "off"
         self._hvac_action = "off"
         self._target_temperature = 24
@@ -105,6 +117,62 @@ class TuyaIRClimate(ClimateEntity):
         self._swing_state = False
 
         _LOGGER.debug("Climate entity initialized: %s (ID: %s)", name, dev_id)
+
+    async def async_added_to_hass(self):
+        """Run when entity about to be added to hass."""
+        await super().async_added_to_hass()
+        
+        # Önceki state'i restore et
+        await self._restore_state()
+
+    async def _restore_state(self):
+        """Restore previous state."""
+        try:
+            old_state = await self.async_get_last_state()
+            if old_state is None:
+                _LOGGER.debug("No previous state found for %s, using defaults", self.name)
+                return
+
+            _LOGGER.debug("Restoring previous state for %s: %s", self.name, old_state.state)
+            
+            # HVAC mode'u restore et
+            if hasattr(old_state, 'state') and old_state.state:
+                restored_hvac_mode = old_state.state
+                if restored_hvac_mode in HVAC_MODE_MAPPING.values():
+                    self._hvac_mode = restored_hvac_mode
+                    _LOGGER.debug("Restored HVAC mode: %s", self._hvac_mode)
+            
+            # Attributes'ları restore et
+            if old_state.attributes:
+                # Target temperature
+                if ATTR_TEMPERATURE in old_state.attributes:
+                    self._target_temperature = old_state.attributes[ATTR_TEMPERATURE]
+                    _LOGGER.debug("Restored target temperature: %s", self._target_temperature)
+                
+                # Fan mode
+                if 'fan_mode' in old_state.attributes:
+                    self._fan_mode = old_state.attributes['fan_mode']
+                    _LOGGER.debug("Restored fan mode: %s", self._fan_mode)
+                
+                # Swing mode
+                if 'swing_mode' in old_state.attributes:
+                    self._swing_mode = old_state.attributes['swing_mode']
+                    _LOGGER.debug("Restored swing mode: %s", self._swing_mode)
+                    
+                    # Protokolün swing durumunu da güncelle
+                    if hasattr(self._protocol, 'swing_active'):
+                        self._protocol.swing_active = (self._swing_mode == "vertical")
+                
+                # HVAC action
+                if 'hvac_action' in old_state.attributes:
+                    self._hvac_action = old_state.attributes['hvac_action']
+                    _LOGGER.debug("Restored HVAC action: %s", self._hvac_action)
+            
+            _LOGGER.info("Successfully restored state for %s: mode=%s, temp=%s, fan=%s, swing=%s", 
+                        self.name, self._hvac_mode, self._target_temperature, self._fan_mode, self._swing_mode)
+                        
+        except Exception as e:
+            _LOGGER.error("Error restoring state for %s: %s", self.name, e)
 
     def _init_device(self):
         if self._device: 
