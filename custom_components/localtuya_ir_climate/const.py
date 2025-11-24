@@ -9,9 +9,8 @@ CONF_PROTOCOL_VERSION = "protocol_version"
 CONF_CLOUD_INFO = "cloud_info"
 CONF_CLIMATE_BRAND = "climate_brand"
 CONF_CLIMATE_MODEL = "climate_model"
-CONF_PERSISTENT_CONNECTION = "persistent_connection"
-
-DEFAULT_PERSISTENT_CONNECTION = False
+CONF_TEMPERATURE_SENSOR = "temperature_sensor"
+CONF_HUMIDITY_SENSOR = "humidity_sensor"
 
 TUYA_VERSIONS = [3.3, 3.4, 3.5, 3.2, 3.1]
 SUPPORTED_BRANDS = ["lg", "mitsubishi", "samsung", "daikin", "general"]
