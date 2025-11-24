@@ -30,8 +30,10 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.core import callback
+from homeassistant.helpers import event
 
-from .const import DOMAIN, DEFAULT_FRIENDLY_NAME, CONF_CLIMATE_BRAND
+from .const import DOMAIN, DEFAULT_FRIENDLY_NAME, CONF_CLIMATE_BRAND, CONF_TEMPERATURE_SENSOR, CONF_HUMIDITY_SENSOR
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,17 +46,6 @@ HVAC_MODE_MAPPING = {
     "auto": HVACMode.AUTO,
     "dry": HVACMode.DRY,
     "fan_only": HVACMode.FAN_ONLY,
-}
-
-# Reverse mapping for restore
-HVAC_MODE_REVERSE_MAPPING = {
-    HVACMode.OFF: "off",
-    HVACMode.HEAT: "heat", 
-    HVACMode.COOL: "cool",
-    HVACMode.HEAT_COOL: "heat_cool",
-    HVACMode.AUTO: "auto",
-    HVACMode.DRY: "dry",
-    HVACMode.FAN_ONLY: "fan_only",
 }
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -70,16 +61,22 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     local_key = config.get("local_key")
     protocol_version = config.get("protocol_version")
     climate_brand = config.get(CONF_CLIMATE_BRAND, "lg")
+    temperature_sensor = config.get(CONF_TEMPERATURE_SENSOR, "")
+    humidity_sensor = config.get(CONF_HUMIDITY_SENSOR, "")
 
-    _LOGGER.debug("Setting up Tuya Climate: %s, brand: %s, dev_id: %s", name, climate_brand, dev_id)
+    _LOGGER.debug("Setting up Tuya Climate: %s, brand: %s, dev_id: %s, temp_sensor: %s, humidity_sensor: %s", 
+                 name, climate_brand, dev_id, temperature_sensor, humidity_sensor)
 
     climate = TuyaIRClimate(
+        hass=hass,
         name=name, 
         dev_id=dev_id, 
         address=host, 
         local_key=local_key,
         protocol_version=protocol_version, 
-        climate_brand=climate_brand
+        climate_brand=climate_brand,
+        temperature_sensor=temperature_sensor,
+        humidity_sensor=humidity_sensor
     )
     
     await hass.async_add_executor_job(climate._update_availability)
@@ -87,8 +84,9 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 
 class TuyaIRClimate(ClimateEntity, RestoreEntity):
-    def __init__(self, name, dev_id, address, local_key, protocol_version, climate_brand):
+    def __init__(self, hass, name, dev_id, address, local_key, protocol_version, climate_brand, temperature_sensor="", humidity_sensor=""):
         """Initialize the climate device."""
+        self.hass = hass
         self._attr_name = name  # Entity ismi için doğrudan attribute
         self._attr_has_entity_name = True  # Modern entity naming
         self._dev_id = dev_id
@@ -97,6 +95,8 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         # Protocol version'ı float'a çevir (Auto ise 3.3 kullan)
         self._protocol_version = float(protocol_version) if protocol_version != "Auto" else 3.3
         self._climate_brand = climate_brand
+        self._temperature_sensor = temperature_sensor
+        self._humidity_sensor = humidity_sensor
         
         from .climate_protocols import get_protocol
         self._protocol = get_protocol(climate_brand)
@@ -110,11 +110,16 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         self._hvac_action = "off"
         self._target_temperature = 24
         self._current_temperature = None
+        self._current_humidity = None
         self._fan_mode = "auto"
         self._swing_mode = "off"
         
         # Swing durumunu takip et
         self._swing_state = False
+        
+        # Sensör state listener'ları
+        self._temp_listener = None
+        self._humidity_listener = None
 
         _LOGGER.debug("Climate entity initialized: %s (ID: %s)", name, dev_id)
 
@@ -124,6 +129,74 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         
         # Önceki state'i restore et
         await self._restore_state()
+        
+        # Sensör listener'larını başlat
+        await self._setup_sensor_listeners()
+
+    async def _setup_sensor_listeners(self):
+        """Setup sensor state listeners."""
+        # Sıcaklık sensörü listener'ı
+        if self._temperature_sensor:
+            @callback
+            def async_temperature_sensor_listener(entity, old_state, new_state):
+                """Handle temperature sensor updates."""
+                if new_state is None or new_state.state in ("unknown", "unavailable"):
+                    self._current_temperature = None
+                else:
+                    try:
+                        self._current_temperature = float(new_state.state)
+                        _LOGGER.debug("Temperature sensor updated: %s°C", self._current_temperature)
+                    except (ValueError, TypeError):
+                        self._current_temperature = None
+                        _LOGGER.debug("Invalid temperature value: %s", new_state.state)
+                
+                self.async_write_ha_state()
+
+            self._temp_listener = event.async_track_state_change(
+                self.hass, self._temperature_sensor, async_temperature_sensor_listener
+            )
+            
+            # İlk değeri al
+            temp_state = self.hass.states.get(self._temperature_sensor)
+            if temp_state and temp_state.state not in ("unknown", "unavailable"):
+                try:
+                    self._current_temperature = float(temp_state.state)
+                    _LOGGER.debug("Initial temperature: %s°C", self._current_temperature)
+                except (ValueError, TypeError):
+                    self._current_temperature = None
+
+        # Nem sensörü listener'ı
+        if self._humidity_sensor:
+            @callback
+            def async_humidity_sensor_listener(entity, old_state, new_state):
+                """Handle humidity sensor updates."""
+                if new_state is None or new_state.state in ("unknown", "unavailable"):
+                    self._current_humidity = None
+                else:
+                    try:
+                        self._current_humidity = float(new_state.state)
+                        _LOGGER.debug("Humidity sensor updated: %s%%", self._current_humidity)
+                    except (ValueError, TypeError):
+                        self._current_humidity = None
+                        _LOGGER.debug("Invalid humidity value: %s", new_state.state)
+                
+                self.async_write_ha_state()
+
+            self._humidity_listener = event.async_track_state_change(
+                self.hass, self._humidity_sensor, async_humidity_sensor_listener
+            )
+            
+            # İlk değeri al
+            humidity_state = self.hass.states.get(self._humidity_sensor)
+            if humidity_state and humidity_state.state not in ("unknown", "unavailable"):
+                try:
+                    self._current_humidity = float(humidity_state.state)
+                    _LOGGER.debug("Initial humidity: %s%%", self._current_humidity)
+                except (ValueError, TypeError):
+                    self._current_humidity = None
+
+        _LOGGER.debug("Sensor listeners setup completed - Temp: %s, Humidity: %s", 
+                     self._temperature_sensor, self._humidity_sensor)
 
     async def _restore_state(self):
         """Restore previous state."""
@@ -173,6 +246,17 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
                         
         except Exception as e:
             _LOGGER.error("Error restoring state for %s: %s", self.name, e)
+
+    async def async_will_remove_from_hass(self):
+        """Clean up when entity is removed."""
+        # Listener'ları temizle
+        if self._temp_listener:
+            self._temp_listener()
+        if self._humidity_listener:
+            self._humidity_listener()
+        
+        self._deinit_device()
+        await super().async_will_remove_from_hass()
 
     def _init_device(self):
         if self._device: 
@@ -320,6 +404,11 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         return self._current_temperature
         
     @property
+    def current_humidity(self):
+        """Return the current humidity."""
+        return self._current_humidity
+        
+    @property
     def target_temperature(self): 
         return self._target_temperature
         
@@ -383,6 +472,19 @@ class TuyaIRClimate(ClimateEntity, RestoreEntity):
         return (ClimateEntityFeature.TARGET_TEMPERATURE |
                 ClimateEntityFeature.FAN_MODE |
                 ClimateEntityFeature.SWING_MODE)
+
+    @property
+    def extra_state_attributes(self):
+        """Return entity specific state attributes."""
+        attrs = {}
+        
+        # Sensör bilgilerini ekle
+        if self._temperature_sensor:
+            attrs["temperature_sensor"] = self._temperature_sensor
+        if self._humidity_sensor:
+            attrs["humidity_sensor"] = self._humidity_sensor
+            
+        return attrs
 
     @property
     def device_info(self):
