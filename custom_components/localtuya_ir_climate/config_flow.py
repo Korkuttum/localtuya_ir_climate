@@ -10,6 +10,7 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 from homeassistant.const import CONF_NAME, CONF_HOST, CONF_DEVICE_ID, CONF_REGION, CONF_CLIENT_ID, CONF_CLIENT_SECRET
+from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,12 +23,13 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_DEVICE_ID: '', 
             CONF_LOCAL_KEY: '', 
             CONF_PROTOCOL_VERSION: 'Auto',
-            CONF_PERSISTENT_CONNECTION: DEFAULT_PERSISTENT_CONNECTION,
             CONF_REGION: 'eu', 
             CONF_CLIENT_ID: '', 
             CONF_CLIENT_SECRET: '', 
             CONF_HOST: '',
             CONF_CLIMATE_BRAND: 'lg', 
+            CONF_TEMPERATURE_SENSOR: '',
+            CONF_HUMIDITY_SENSOR: '',
         }
         self.cloud = False
 
@@ -146,10 +148,8 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self.config[CONF_CLIMATE_BRAND] = user_input[CONF_CLIMATE_BRAND]
             
-            if self.cloud:
-                return await self.async_step_cloud_final()
-            else:
-                return await self.async_step_manual_config()
+            # Sensör seçimine geç
+            return await self.async_step_sensor_selection()
         
         # Açılır pencere şeklinde marka listesi
         brand_list = {
@@ -167,6 +167,99 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="climate_config", 
             data_schema=schema
+        )
+
+    async def _get_filtered_sensors(self):
+        """Get filtered temperature and humidity sensors."""
+        entity_reg = er.async_get(self.hass)
+        temp_sensors = {'': 'No Temperature Sensor'}
+        humidity_sensors = {'': 'No Humidity Sensor'}
+        
+        # Tüm entity'leri al
+        entities = list(entity_reg.entities.values())
+        
+        for entity in entities:
+            entity_id = entity.entity_id
+            friendly_name = entity.original_name or entity_id
+            
+            # Sadece sensor entity'lerini al
+            if not entity_id.startswith('sensor.'):
+                continue
+            
+            # State'i kontrol et
+            state = self.hass.states.get(entity_id)
+            if not state:
+                continue
+                
+            # Unit of measurement'a göre filtrele
+            unit = state.attributes.get('unit_of_measurement', '').lower()
+            
+            # Sıcaklık sensörleri (°C, °F, temperature)
+            if unit in ['°c', '°f', 'c', 'f'] or 'temperature' in entity_id.lower() or 'sıcaklık' in friendly_name.lower():
+                temp_sensors[entity_id] = f"{friendly_name} ({entity_id})"
+            
+            # Nem sensörleri (%, humidity)
+            elif unit in ['%'] or 'humidity' in entity_id.lower() or 'nem' in friendly_name.lower():
+                humidity_sensors[entity_id] = f"{friendly_name} ({entity_id})"
+        
+        _LOGGER.debug("Found %d temp sensors, %d humidity sensors", len(temp_sensors), len(humidity_sensors))
+        return temp_sensors, humidity_sensors
+
+    async def async_step_sensor_selection(self, user_input=None):
+        """Sensor selection step."""
+        errors = {}
+        
+        if user_input is not None:
+            # DEBUG: Kullanıcı ne gönderdi?
+            _LOGGER.debug("USER INPUT RECEIVED: %s", user_input)
+            
+            # Kullanıcı sensör seçti veya atladı
+            temp_sensor = user_input.get(CONF_TEMPERATURE_SENSOR, '')
+            humidity_sensor = user_input.get(CONF_HUMIDITY_SENSOR, '')
+            
+            # DEBUG: Değerleri kontrol et
+            _LOGGER.debug("Raw temp sensor value: '%s' (type: %s)", temp_sensor, type(temp_sensor))
+            _LOGGER.debug("Raw humidity sensor value: '%s' (type: %s)", humidity_sensor, type(humidity_sensor))
+            
+            # Boş string mi kontrol et
+            self.config[CONF_TEMPERATURE_SENSOR] = '' if temp_sensor == '' else temp_sensor
+            self.config[CONF_HUMIDITY_SENSOR] = '' if humidity_sensor == '' else humidity_sensor
+            
+            _LOGGER.debug("Final config - Temp: '%s', Humidity: '%s'", 
+                         self.config[CONF_TEMPERATURE_SENSOR], 
+                         self.config[CONF_HUMIDITY_SENSOR])
+            
+            # Config entry oluştur
+            if self.config[CONF_DEVICE_ID] in self._async_current_ids():
+                return self.async_abort(reason="already_configured")
+            
+            await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
+            return self.async_create_entry(
+                title=self.config[CONF_NAME], 
+                data=self.config
+            )
+
+        # Filtrelenmiş sensörleri al
+        temp_sensors, humidity_sensors = await self._get_filtered_sensors()
+        
+        _LOGGER.debug("Available temp sensors for dropdown: %s", list(temp_sensors.keys()))
+        _LOGGER.debug("Available humidity sensors for dropdown: %s", list(humidity_sensors.keys()))
+        _LOGGER.debug("Current defaults - Temp: '%s', Humidity: '%s'", 
+                     self.config.get(CONF_TEMPERATURE_SENSOR, ''), 
+                     self.config.get(CONF_HUMIDITY_SENSOR, ''))
+        
+        schema = vol.Schema({
+            vol.Optional(CONF_TEMPERATURE_SENSOR, default=self.config.get(CONF_TEMPERATURE_SENSOR, '')): vol.In(temp_sensors),
+            vol.Optional(CONF_HUMIDITY_SENSOR, default=self.config.get(CONF_HUMIDITY_SENSOR, '')): vol.In(humidity_sensors),
+        })
+        
+        return self.async_show_form(
+            step_id="sensor_selection",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "climate_name": self.config[CONF_NAME]
+            }
         )
 
     async def async_step_cloud_final(self, user_input=None):
@@ -215,14 +308,8 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         del self.cloud_info['key']
                     self.config[CONF_CLOUD_INFO] = getattr(self, 'cloud_info', None)
                     
-                    if self.config[CONF_DEVICE_ID] in self._async_current_ids():
-                        return self.async_abort(reason="already_configured")
-                    
-                    await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
-                    return self.async_create_entry(
-                        title=self.config[CONF_NAME], 
-                        data=self.config
-                    )
+                    # Sensör seçimine yönlendir
+                    return await self.async_step_sensor_selection()
                 else:
                     # IP bulundu ama bağlantı kurulamadı
                     return await self.async_step_cloud_ip()
@@ -240,7 +327,6 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         if user_input is not None:
             self.config[CONF_HOST] = user_input[CONF_HOST]
-            self.config[CONF_PERSISTENT_CONNECTION] = user_input[CONF_PERSISTENT_CONNECTION]
             
             # Auto version ile connection test
             version_ok = None
@@ -267,20 +353,13 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     del self.cloud_info['key']
                 self.config[CONF_CLOUD_INFO] = getattr(self, 'cloud_info', None)
                 
-                if self.config[CONF_DEVICE_ID] in self._async_current_ids():
-                    return self.async_abort(reason="already_configured")
-                
-                await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
-                return self.async_create_entry(
-                    title=self.config[CONF_NAME], 
-                    data=self.config
-                )
+                # Sensör seçimine yönlendir
+                return await self.async_step_sensor_selection()
             else:
                 errors["base"] = "cannot_connect"
 
         schema = vol.Schema({
             vol.Required(CONF_HOST, default=self.config.get(CONF_HOST, "")): cv.string,
-            vol.Required(CONF_PERSISTENT_CONNECTION, default=self.config.get(CONF_PERSISTENT_CONNECTION, DEFAULT_PERSISTENT_CONNECTION)): cv.boolean,
         })
         
         return self.async_show_form(
@@ -316,14 +395,8 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     continue
             
             if version_ok:
-                if self.config[CONF_DEVICE_ID] in self._async_current_ids():
-                    return self.async_abort(reason="already_configured")
-                
-                await self.async_set_unique_id(self.config[CONF_DEVICE_ID])
-                return self.async_create_entry(
-                    title=self.config[CONF_NAME], 
-                    data=self.config
-                )
+                # Sensör seçimine yönlendir
+                return await self.async_step_sensor_selection()
             else:
                 errors["base"] = "cannot_connect"
 
@@ -332,7 +405,6 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_HOST, default=self.config.get(CONF_HOST, "")): cv.string,
             vol.Required(CONF_DEVICE_ID, default=self.config.get(CONF_DEVICE_ID, "")): cv.string,
             vol.Required(CONF_LOCAL_KEY, default=self.config.get(CONF_LOCAL_KEY, "")): cv.string,
-            vol.Required(CONF_PERSISTENT_CONNECTION, default=self.config.get(CONF_PERSISTENT_CONNECTION, DEFAULT_PERSISTENT_CONNECTION)): cv.boolean,
         })
         
         return self.async_show_form(
@@ -367,19 +439,84 @@ class LocalTuyaClimateOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, entry):
         self.entry = entry
         self.config = dict(entry.data.items())
+        _LOGGER.debug("OptionsFlow initialized with config: %s", self.config)
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
+        _LOGGER.debug("OptionsFlow step_init called, user_input: %s", user_input)
+        
         if user_input is not None:
-            self.config[CONF_PERSISTENT_CONNECTION] = user_input[CONF_PERSISTENT_CONNECTION]
-            self.hass.config_entries.async_update_entry(self.entry, data=self.config)
-            return self.async_create_entry(data=self.config)
+            # DEBUG: Kullanıcı ne gönderdi?
+            _LOGGER.debug("OPTIONS USER INPUT: %s", user_input)
+            
+            # "No Sensor" seçildiğinde BOŞ STRING KAYDET
+            temperature_sensor = user_input[CONF_TEMPERATURE_SENSOR]
+            humidity_sensor = user_input[CONF_HUMIDITY_SENSOR]
+            
+            _LOGGER.debug("Raw options - Temp: '%s' (type: %s), Humidity: '%s' (type: %s)", 
+                         temperature_sensor, type(temperature_sensor),
+                         humidity_sensor, type(humidity_sensor))
+            
+            # Config'i güncelle - BOŞ STRING DOĞRUDAN KAYDET
+            updated_config = dict(self.config)
+            updated_config[CONF_TEMPERATURE_SENSOR] = temperature_sensor
+            updated_config[CONF_HUMIDITY_SENSOR] = humidity_sensor
+            
+            _LOGGER.debug("Updating config with: %s", updated_config)
+            
+            self.hass.config_entries.async_update_entry(self.entry, data=updated_config)
+            
+            # Entity'yi yeniden yükle
+            _LOGGER.debug("Reloading entity...")
+            await self.hass.config_entries.async_reload(self.entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        # Filtrelenmiş sensörleri al - TEK BİR LİSTE KULLAN
+        entity_reg = er.async_get(self.hass)
+        sensor_options = {'': 'No Sensor'}
+        
+        entities = list(entity_reg.entities.values())
+        for entity in entities:
+            entity_id = entity.entity_id
+            friendly_name = entity.original_name or entity_id
+            
+            if not entity_id.startswith('sensor.'):
+                continue
+                
+            state = self.hass.states.get(entity_id)
+            if not state:
+                continue
+                
+            unit = state.attributes.get('unit_of_measurement', '').lower()
+            entity_name_lower = entity_id.lower()
+            friendly_name_lower = friendly_name.lower()
+            
+            # Sadece sıcaklık ve nem sensörleri
+            is_temperature = (unit in ['°c', '°f', 'c', 'f'] or 
+                            'temperature' in entity_name_lower or 
+                            'sıcaklık' in friendly_name_lower)
+            
+            is_humidity = (unit in ['%'] or 
+                          'humidity' in entity_name_lower or 
+                          'nem' in friendly_name_lower)
+            
+            if is_temperature or is_humidity:
+                sensor_options[entity_id] = f"{friendly_name} ({entity_id})"
+
+        _LOGGER.debug("Available sensors for options: %s", list(sensor_options.keys()))
+        _LOGGER.debug("Current config defaults - Temp: '%s', Humidity: '%s'", 
+                     self.config.get(CONF_TEMPERATURE_SENSOR, ''), 
+                     self.config.get(CONF_HUMIDITY_SENSOR, ''))
 
         schema = vol.Schema({
-            vol.Required(
-                CONF_PERSISTENT_CONNECTION, 
-                default=self.config.get(CONF_PERSISTENT_CONNECTION, DEFAULT_PERSISTENT_CONNECTION)
-            ): cv.boolean
+            vol.Optional(
+                CONF_TEMPERATURE_SENSOR,
+                default=self.config.get(CONF_TEMPERATURE_SENSOR, '')
+            ): vol.In(sensor_options),
+            vol.Optional(
+                CONF_HUMIDITY_SENSOR,
+                default=self.config.get(CONF_HUMIDITY_SENSOR, '')
+            ): vol.In(sensor_options),
         })
 
         return self.async_show_form(
