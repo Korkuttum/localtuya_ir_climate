@@ -155,9 +155,19 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         brand_list = {
             "lg": "LG",
             "mitsubishi": "Mitsubishi", 
-            "samsung": "Samsung",
             "daikin": "Daikin",
-            "general": "General (NEC Protocol)"
+            "toshiba": "Toshiba",
+            "midea": "Midea",
+            "gree": "Gree",
+            "fujitsu": "Fujitsu",
+            "tcl": "TCL",
+            "ballu": "Ballu",
+            "coolix": "Coolix",
+            "hitachi": "Hitachi",
+            "whirlpool": "Whirlpool",
+            "general": "General (NEC Protocol)",
+            "whynter": "Whynter",
+            "yashima": "Yashima"
         }
         
         schema = vol.Schema({
@@ -166,7 +176,10 @@ class LocalTuyaClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         return self.async_show_form(
             step_id="climate_config", 
-            data_schema=schema
+            data_schema=schema,
+            description_placeholders={
+                "supported_brands": ", ".join([brand_list[b] for b in brand_list.keys()])
+            }
         )
 
     async def _get_filtered_sensors(self):
